@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# 本地构建产物（源码目录不放在这个仓库里）
+node_modules/
+dist/
