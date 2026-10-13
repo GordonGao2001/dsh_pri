@@ -25,6 +25,7 @@ PATCH_FILE="${DSH_PATCH:-$HERE/dsh-password-auth.patch}"
 PNPM_VERSION="11.28.5"
 DO_BUILD=1
 FORCE_PATCH=0
+FORCE_REBUILD=0
 
 log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m!!  %s\033[0m\n' "$*" >&2; }
@@ -39,6 +40,7 @@ usage() {
   ./install-dsh-pwd.sh --dir /opt/dsh   # 指定目录
   ./install-dsh-pwd.sh --no-build       # 只拉取并打补丁，不安装依赖/不构建
   ./install-dsh-pwd.sh --force-patch    # 已有源码时先丢弃本地改动再打补丁
+  ./install-dsh-pwd.sh --rebuild        # 忽略「已构建过」的记录，强制重装依赖并重新构建
 
 环境变量:
   DSH_SRC            源码目录 (同 --dir)
@@ -54,6 +56,7 @@ while [ $# -gt 0 ]; do
     --patch) PATCH_FILE="$2"; shift 2 ;;
     --no-build) DO_BUILD=0; shift ;;
     --force-patch) FORCE_PATCH=1; shift ;;
+    --force-rebuild|--rebuild) FORCE_REBUILD=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "未知参数: $1" ;;
   esac
@@ -70,16 +73,23 @@ echo "源码  $SRC_DIR"
 echo "补丁  $PATCH_FILE"
 
 # ---------------------------------------------------------------- 拉源码
-if [ ! -d "$SRC_DIR/.git" ]; then
-  log "克隆 $REPO_URL"
-  # 部分克隆：历史完整（能切到指定提交），文件按需拉取，比全量克隆小很多。
-  git clone --filter=blob:none "$REPO_URL" "$SRC_DIR" || {
-    warn "部分克隆失败，改用普通克隆"
-    rm -rf "$SRC_DIR"
-    git clone "$REPO_URL" "$SRC_DIR"
-  }
+if [ -d "$SRC_DIR/.git" ]; then
+  log "复用已有仓库 ${SRC_DIR}（不重新克隆）"
+elif [ -e "$SRC_DIR" ]; then
+  die "$SRC_DIR 已存在但不是 git 仓库，请换个 --dir 或先清理它"
 else
-  log "复用已有仓库 $SRC_DIR"
+  log "克隆 $REPO_URL"
+  # 克隆到临时目录再改名：中途失败也不会留下半个目录、更不会删掉已有内容。
+  tmp="$SRC_DIR.clone.$$"
+  rm -rf "$tmp"
+  # 部分克隆：历史完整（能切到指定提交），文件按需拉取，比全量克隆小很多。
+  if ! git clone --filter=blob:none "$REPO_URL" "$tmp"; then
+    warn "部分克隆失败（服务器或代理不支持 filter），改用普通克隆重试"
+    rm -rf "$tmp"
+    git clone "$REPO_URL" "$tmp" || { rm -rf "$tmp"; die "克隆 $REPO_URL 失败"; }
+  fi
+  mkdir -p "$(dirname "$SRC_DIR")"
+  mv "$tmp" "$SRC_DIR"
 fi
 
 cd "$SRC_DIR"
@@ -116,6 +126,17 @@ if [ "$DO_BUILD" = 0 ]; then
   exit 0
 fi
 
+# ---------------------------------------------------------------- 是不是已经构建过
+# 记录「用哪个补丁构建成功过」：同一台机器上重复执行时，直接跳过 install + build。
+PATCH_SHA="$( (shasum -a 256 "$PATCH_FILE" 2>/dev/null || sha256sum "$PATCH_FILE") | awk '{print $1}')"
+BUILD_MARKER="$SRC_DIR/.dsh-pwd-build.ok"
+if [ "$FORCE_REBUILD" = 0 ] && [ -f "$BUILD_MARKER" ] && [ "$(cat "$BUILD_MARKER")" = "$PATCH_SHA" ] \
+  && [ -d "$SRC_DIR/node_modules" ] && [ -f "$SRC_DIR/apps/web/dist/index.html" ]; then
+  log "已经用同一个补丁 (${PATCH_SHA:0:12}) 构建过，跳过依赖安装与构建"
+  log "（要强制重来请加 --rebuild）"
+  exit 0
+fi
+
 # ---------------------------------------------------------------- pnpm
 if ! command -v pnpm >/dev/null 2>&1; then
   log "未找到 pnpm，尝试安装 pnpm@$PNPM_VERSION"
@@ -132,13 +153,18 @@ fi
 echo "pnpm  ${PNPM[*]}"
 
 # ---------------------------------------------------------------- 安装 + 构建
-log "安装依赖 (pnpm install) —— 首次会下载大量包，请耐心等待"
-"${PNPM[@]}" install
+if [ -d "$SRC_DIR/node_modules" ]; then
+  log "已有 node_modules，跳过 pnpm install"
+else
+  log "安装依赖 (pnpm install) —— 首次会下载大量包，请耐心等待"
+  "${PNPM[@]}" install
+fi
 
 log "构建 (pnpm run build) —— 需要编译整个 monorepo 与前端，通常 10 分钟以上"
 "${PNPM[@]}" run build
 
 [ -f "$SRC_DIR/apps/web/dist/index.html" ] || die "构建结束但没有找到 apps/web/dist/index.html，构建可能失败"
+printf '%s\n' "$PATCH_SHA" > "$BUILD_MARKER"
 log "完成。启动方式："
 cat <<EOF
 

@@ -28,6 +28,36 @@
 
 ---
 
+## 全新机器：三条命令
+
+任何一台空机器（什么都没有也行，脚本会自己装 Node）：
+
+```bash
+git clone git@github.com:GordonGao2001/dsh_pri.git
+cd dsh_pri
+./bootstrap.sh -pwd '你的密码' --tunnel
+```
+
+`bootstrap.sh` 依次做：装 Node（缺或太旧才装）→ 拉 deepseek-harness 并打补丁 → 装依赖 + 构建
+（**已经用同一个补丁构建过就跳过，不重新克隆也不重新编译**）→ 启动 `dsh web` →（可选）开 Cloudflare 隧道。
+
+不加 `--tunnel` 就只监听 127.0.0.1；`--prepare-only` 只准备环境不启动；`--rebuild` 强制重来。
+
+private 仓库在空机器上没有 SSH key 时，用带 token 的地址：
+`git clone https://<你的PAT>@github.com/GordonGao2001/dsh_pri.git`
+
+---
+
+## 分步执行（想自己控制每一步时用）
+
+```bash
+./install-dsh-pwd.sh                        # 拉源码 + 打补丁 + 装依赖 + 构建；重复执行会跳过已完成的步骤
+./run-dsh-web.sh -pwd '你的密码'             # 只监听 127.0.0.1:3080
+./run-dsh-web.sh -pwd '你的密码' --tunnel    # 同时开 Cloudflare 临时隧道
+```
+
+---
+
 ## 快速开始
 
 ### 本地（macOS / Linux）
