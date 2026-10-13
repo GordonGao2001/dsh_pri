@@ -18,7 +18,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PASSWORD=""
 PORT=3080
 USE_TUNNEL=0
-TUNNEL_LOG=""
+TUNNEL_LOG="${DSH_TUNNEL_LOG:-$HOME/.dsh-cloudflared.log}"
+TUNNEL_URL_FILE="${DSH_TUNNEL_URL_FILE:-$HOME/.dsh-tunnel-url}"
 TUNNEL_PID=""
 EXTRA=()
 
@@ -105,7 +106,7 @@ cleanup() {
   if [ -n "$TUNNEL_PID" ] && kill -0 "$TUNNEL_PID" 2>/dev/null; then
     kill "$TUNNEL_PID" 2>/dev/null || true
   fi
-  [ -n "$TUNNEL_LOG" ] && [ -f "$TUNNEL_LOG" ] && rm -f "$TUNNEL_LOG"
+  # 日志和地址文件故意保留：断开之后还能回查上次的地址和 cloudflared 的错误。
 }
 trap cleanup EXIT INT TERM
 
@@ -113,8 +114,12 @@ trap cleanup EXIT INT TERM
 TUNNEL_URL=""
 if [ "$USE_TUNNEL" = 1 ]; then
   ensure_cloudflared
-  TUNNEL_LOG="$(mktemp -t dsh-cloudflared-XXXXXX.log)"
-  log "启动 Cloudflare 临时隧道 -> http://127.0.0.1:$PORT"
+  # 上一次没退干净时会抢同一个端口/两条隧道，这里先提醒一下。
+  if command -v pgrep >/dev/null 2>&1 && pgrep -f "cloudflared tunnel" >/dev/null 2>&1; then
+    warn "已经有 cloudflared 在跑；如果那是上一次留下的，先 kill 掉再继续"
+  fi
+  : > "$TUNNEL_LOG"
+  log "启动 Cloudflare 临时隧道 -> http://127.0.0.1:${PORT}（日志: ${TUNNEL_LOG}）"
   cloudflared tunnel --url "http://127.0.0.1:$PORT" --no-autoupdate >"$TUNNEL_LOG" 2>&1 &
   TUNNEL_PID=$!
   for _ in $(seq 1 90); do
@@ -127,6 +132,7 @@ if [ "$USE_TUNNEL" = 1 ]; then
     sleep 1
   done
   [ -n "$TUNNEL_URL" ] || die "90 秒内没拿到 trycloudflare 地址，日志在 $TUNNEL_LOG"
+  printf '%s/\n' "$TUNNEL_URL" > "$TUNNEL_URL_FILE" 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------- 组装参数
@@ -154,7 +160,9 @@ EOF
 if [ -n "$TUNNEL_URL" ]; then
 cat <<EOF
   公网地址 : $TUNNEL_URL/
-             ↑ 把这个地址发到浏览器打开（Cloudflare 临时隧道，重启就变）
+             ↑ 用浏览器打开这个地址。临时隧道：每次重启换新地址，
+               旧地址会变成 Cloudflare Error 1033，丢掉重跑即可。
+               上次的地址也写在这里：$TUNNEL_URL_FILE
 EOF
 else
 cat <<EOF

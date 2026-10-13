@@ -75,6 +75,32 @@ cd dsh-pwd-cloudflare
 ./run-dsh-web.sh -pwd 'my-secret-123' --tunnel
 ```
 
+### 隧道掉了 / Cloudflare Error 1033
+
+1033 = 这个域名的隧道不在线（cloudflared 进程没了或连不上），**不是密码或 harness 的问题**。
+trycloudflare 是临时隧道，**每次启动换新域名**，旧域名在 cloudflared 停掉的那一刻永久失效。
+
+排查三连，然后重跑启动命令、用新地址：
+
+```bash
+ps aux | grep -E "cloudflared|bin.ts web" | grep -v grep
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3080/
+tail -20 ~/.dsh-cloudflared.log          # 保留的 cloudflared 日志
+./run-dsh-web.sh -pwd '你的密码' --tunnel # 重新拉起，用新打印的地址
+```
+
+最常见的原因是 SSH 会话断了（脚本和 cloudflared 一起被 SIGHUP 杀掉），所以临时机器上请放 tmux 里跑：
+
+```bash
+tmux new -s dsh
+./run-dsh-web.sh -pwd '你的密码' --tunnel
+# 看到地址后 Ctrl-b 再按 d，脱离；回来 tmux attach -t dsh
+```
+
+上次的隧道地址会写在 `~/.dsh-tunnel-url`，cloudflared 的完整日志写在 `~/.dsh-cloudflared.log`（两个路径都能用环境变量 `DSH_TUNNEL_URL_FILE` / `DSH_TUNNEL_LOG` 改）。
+
+---
+
 `--tunnel` 会先起 cloudflared 拿到公网域名，再带着
 `--trusted-host <域名> --public-url https://<域名>/` 启动 harness（原因见下面「Host 头」一节），
 所以打印出来的公网地址就是可以直接发给别人（其实只有你自己能用，见下）的地址。
